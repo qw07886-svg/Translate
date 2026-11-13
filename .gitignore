@@ -1,0 +1,9 @@
+node_modules/
+data/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+bin/libredwg/*.dll
+!bin/libredwg/README.txt

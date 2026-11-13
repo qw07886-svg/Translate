@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Drawing & Document Translator",
+    "description": "Left-sidebar panel that translates PDF / DWG drawings and Word documents into Chinese, saving each translation next to the source file as 翻译+中文名+原名 with no auxiliary files."
+  }
+}

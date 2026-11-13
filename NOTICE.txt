@@ -1,0 +1,31 @@
+DRAWING & DOCUMENT TRANSLATOR — THIRD-PARTY NOTICES
+===================================================
+
+This plugin invokes the following third-party components. None are modified
+except where noted; their licenses apply to those components.
+
+1. LibreDWG (https://www.gnu.org/software/libredwg/)
+   License: GNU General Public License v3 (GPLv3)
+   Used as: command-line converters dwg2dxf.exe / dwgread.exe (bin/libredwg/).
+   The plugin calls the executables as separate processes and does not link
+   against LibreDWG code, but the binaries are redistributed under GPLv3.
+   Corresponding source is available from the URL above.
+
+2. PyMuPDF / MuPDF (https://pymupdf.readthedocs.io/)
+   License: GNU Affero General Public License v3 (AGPLv3), or commercial license.
+   Used as: Python module for PDF text extraction/editing (installed separately
+   into the DSH Python runtime, not bundled in this repository).
+
+3. ezdxf (https://ezdxf.readthedocs.io/)
+   License: MIT
+   Used as: DXF reading/writing and PDF rendering (installed separately).
+
+4. python-docx (https://python-docx.readthedocs.io/)
+   License: MIT
+   Used as: Word document reading/writing (installed separately).
+
+5. 宋体 / SimSun font (Microsoft Windows system font)
+   Used as: font for re-inserted Chinese text. Not redistributed here; the
+   plugin reads the local Windows installation.
+
+No warranty is provided. The plugin is for internal use.
