@@ -15,6 +15,7 @@ except Exception:
     pass
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 RUN_TAGS = {qn("w:r"), qn("w:hyperlink"), qn("w:smartTag"), qn("w:sdt"), qn("w:ins"), qn("w:del")}
@@ -109,6 +110,19 @@ def replace_paragraph_text(paragraph, text):
             new_run._element.insert(0, properties)
         except Exception:
             pass
+    # Translated Chinese text is set in 宋体 uniformly.
+    try:
+        new_run.font.name = "宋体"
+        rpr = new_run._element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.append(rfonts)
+        rfonts.set(qn("w:eastAsia"), "宋体")
+        rfonts.set(qn("w:ascii"), "宋体")
+        rfonts.set(qn("w:hAnsi"), "宋体")
+    except Exception:
+        pass
 
 
 def cmd_apply(input_path, map_path, out_path):

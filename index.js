@@ -79,7 +79,7 @@ function registerAgentTool(ctx, manager) {
           limit: args?.limit ?? 5,
           dryRun: args?.dryRun === true,
         })
-        const deadline = Date.now() + 15 * 60_000
+        const deadline = Date.now() + 45 * 60_000
         let job = manager.get(started.jobId)
         while (job && job.status === 'running' && Date.now() < deadline) {
           if (exec?.signal?.aborted) {

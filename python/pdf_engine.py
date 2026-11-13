@@ -17,11 +17,14 @@ except Exception:
 import pymupdf
 
 FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\simsun.ttc",
+    r"C:\Windows\Fonts\simsun.ttf",
     r"C:\Windows\Fonts\msyh.ttc",
     r"C:\Windows\Fonts\msyh.ttf",
-    r"C:\Windows\Fonts\simsun.ttc",
     r"C:\Windows\Fonts\simhei.ttf",
 ]
+# Inserted Chinese uses 宋体 uniformly (matches the DWG output).
+FONT_NAME = "simsun"
 
 
 def fail(message):
@@ -87,19 +90,20 @@ def insert_translation(page, segment, text, font_path):
     if rect.width <= 1 or rect.height <= 0.5:
         return False
     base = segment.get("font_size") or 8.0
+    minimum = max(6.0, base * 0.6)
     sizes = []
     for factor in (1.0, 0.92, 0.85, 0.78, 0.7, 0.62, 0.55, 0.48):
         candidate = base * factor
-        if candidate < 3.2:
+        if candidate < minimum:
             break
         sizes.append(candidate)
     if not sizes:
-        return False
+        sizes = [minimum]
     target = rect + (-0.5, -0.5, 0.5, 0.5)
     for size in sizes:
         try:
             if font_path:
-                result = page.insert_textbox(target, text, fontsize=size, fontname="msyh", fontfile=font_path,
+                result = page.insert_textbox(target, text, fontsize=size, fontname=FONT_NAME, fontfile=font_path,
                                              color=(0, 0, 0), align=0, lineheight=1.0)
             else:
                 result = page.insert_textbox(target, text, fontsize=size, fontname="china-s",
@@ -108,7 +112,14 @@ def insert_translation(page, segment, text, font_path):
             result = -1
         if result >= 0:
             return True
-    return False
+    # Last resort: draw one line at the minimum readable size without wrapping.
+    try:
+        y = rect.y1 - 1.0
+        page.insert_text((rect.x0 + 0.5, y), text, fontsize=minimum,
+                         fontname=FONT_NAME, fontfile=font_path or "", color=(0, 0, 0))
+        return True
+    except Exception:
+        return False
 
 
 def cmd_apply(input_path, map_path, out_path):

@@ -4,7 +4,11 @@ extract <input.dwg> <out.json>
 apply   <input.dwg> <map.json> <output.dxf> [--pdf <output.pdf>]
 
 LibreDWG is not Unicode-path safe on Windows, so the DWG is copied into a pure
-ASCII temporary directory before conversion.
+ASCII temporary directory before conversion. Conversion is attempted with
+several DXF versions because dwg2dxf fails on some newer DWG files.
+
+Translated text is written with a dedicated 宋体 (SimSun) text style so that
+CJK glyphs render at full size inside AutoCAD/DXF viewers.
 """
 
 import json
@@ -37,7 +41,21 @@ BIN_DIR = os.path.join(PLUGIN_DIR, "bin", "libredwg")
 LEGACY_BIN_DIR = r"C:\Users\Administrator\dsh-dwg-tools\libredwg"
 DWG2DXF = _first_existing([os.path.join(BIN_DIR, "dwg2dxf.exe"), os.path.join(LEGACY_BIN_DIR, "dwg2dxf.exe")])
 DWGREAD = _first_existing([os.path.join(BIN_DIR, "dwgread.exe"), os.path.join(LEGACY_BIN_DIR, "dwgread.exe")])
-TEXT_TYPES = ("TEXT", "MTEXT", "ATTRIB", "ATTDEF")
+
+# Entity kinds whose text we translate. ATTRIB/ATTDEF live inside INSERT blocks,
+# MULTILEADER/DIMENSION/TOLERANCE cover annotation text that plain TEXT misses.
+TEXT_TYPES = ("TEXT", "MTEXT", "ATTRIB", "ATTDEF", "MULTILEADER", "DIMENSION", "TOLERANCE", "ACAD_TABLE")
+PLAIN_TYPES = ("TEXT", "MTEXT", "ATTRIB", "ATTDEF")
+
+CJK_FONT_NAME = "宋体"
+CJK_FONT_FILE = "simsun.ttc"
+
+DXF_ATTEMPTS = (
+    ("default", []),
+    ("r2018", ["--as", "r2018"]),
+    ("r2000", ["--as", "r2000"]),
+    ("r12", ["--as", "r12"]),
+)
 
 
 def fail(message):
@@ -50,20 +68,42 @@ def log_warning(message):
 
 
 def convert_to_dxf(dwg_path, work_dir):
+    """Convert DWG to DXF, trying several target DXF versions.
+
+    Returns (path, ezdxf_document, variant_label). Raises RuntimeError when no
+    variant produces a readable DXF.
+    """
     if not os.path.exists(DWG2DXF):
         raise RuntimeError("converter-missing: 未找到 %s（LibreDWG 的 dwg2dxf.exe）" % DWG2DXF)
     source = os.path.join(work_dir, "in.dwg")
-    shutil.copyfile(dwg_path, source)
-    target = os.path.join(work_dir, "out.dxf")
-    try:
-        proc = subprocess.run([DWG2DXF, "-y", "-o", "out.dxf", "in.dwg"], cwd=work_dir,
-                              capture_output=True, timeout=900)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("dwg2dxf 转换超时（>900s）")
-    if not os.path.exists(target):
-        tail = (proc.stderr or b"").decode("utf-8", "replace")[-600:].strip()
-        raise RuntimeError("dwg2dxf 转换失败（退出码 %s）：%s" % (proc.returncode, tail or "无输出"))
-    return target
+    if not os.path.exists(source):
+        shutil.copyfile(dwg_path, source)
+    errors = []
+    for label, extra in DXF_ATTEMPTS:
+        target_name = "out_%s.dxf" % label
+        target = os.path.join(work_dir, target_name)
+        if os.path.exists(target):
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+        command = [DWG2DXF, "-y", "-o", target_name, "in.dwg"] + extra
+        try:
+            proc = subprocess.run(command, cwd=work_dir, capture_output=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            errors.append("%s: 转换超时" % label)
+            continue
+        if not os.path.exists(target) or os.path.getsize(target) < 64:
+            tail = (proc.stderr or b"").decode("utf-8", "replace")[-300:].strip()
+            errors.append("%s: 退出码 %s %s" % (label, proc.returncode, tail))
+            continue
+        try:
+            doc = ezdxf.readfile(target)
+        except Exception as error:
+            errors.append("%s: DXF 读取失败 %s" % (label, error))
+            continue
+        return target, doc, label
+    raise RuntimeError("dwg2dxf 转换失败（尝试 %d 种 DXF 版本）：%s" % (len(DXF_ATTEMPTS), " | ".join(errors)))
 
 
 def entity_text(entity):
@@ -73,50 +113,250 @@ def entity_text(entity):
             return entity.plain_text()
         if kind in ("TEXT", "ATTRIB", "ATTDEF"):
             return entity.dxf.get("text", "")
+        if kind == "DIMENSION":
+            value = entity.dxf.get("text", "") or ""
+            return "" if value.strip() in ("", "<>") else value
+        if kind == "TOLERANCE":
+            return entity.dxf.get("text", "") or ""
+        if kind == "MULTILEADER":
+            try:
+                return entity.get_mtext_content()
+            except Exception:
+                try:
+                    return entity.context.mtext.default_content
+                except Exception:
+                    return ""
+        if kind == "ACAD_TABLE":
+            values = []
+            try:
+                for cell in entity.cells:
+                    value = getattr(cell, "text", "")
+                    if isinstance(value, str) and value.strip():
+                        values.append(value)
+            except Exception:
+                pass
+            return "\n".join(values)
     except Exception as error:
         log_warning("读取 %s 文本失败: %s" % (kind, error))
     return ""
 
 
 def collect_segments(doc):
+    """Collect every text-bearing entity in the entity database.
+
+    `doc.entitydb` is the global entity database: it includes modelspace,
+    paperspace/layouts, block definitions, INSERT attributes and dimension
+    overrides, which is why a plain modelspace query misses many texts.
+    """
     segments = []
+    seen = set()
     for handle, entity in doc.entitydb.items():
         kind = entity.dxftype()
         if kind not in TEXT_TYPES:
             continue
         text = entity_text(entity)
-        if not isinstance(text, str) or not text.strip():
+        if not isinstance(text, str):
             continue
+        text = text.strip()
+        if not text:
+            continue
+        handle_key = str(handle).upper()
+        if handle_key in seen:
+            continue
+        seen.add(handle_key)
         layer = ""
         try:
             layer = entity.dxf.get("layer", "")
         except Exception:
             layer = ""
-        segments.append({"id": "e" + str(handle).upper(), "handle": str(handle).upper(),
-                         "type": kind, "text": text.strip(), "layer": layer})
+        segments.append({"id": "e" + handle_key, "handle": handle_key,
+                         "type": kind, "text": text, "layer": layer})
     return segments
 
 
-def set_entity_text(entity, text):
+def ensure_cjk_style(doc):
+    """Create (or find) the 宋体 text style used for translated text."""
+    try:
+        for candidate in (CJK_FONT_NAME, "SimSun"):
+            if doc.styles.has_entry(candidate):
+                style = doc.styles.get(candidate)
+                try:
+                    style.dxf.font = CJK_FONT_FILE
+                except Exception:
+                    pass
+                return candidate
+    except Exception as error:
+        log_warning("查找宋体样式失败: %s" % error)
+    try:
+        doc.styles.new(CJK_FONT_NAME, dxfattribs={"font": CJK_FONT_FILE, "bigfont": ""})
+        return CJK_FONT_NAME
+    except Exception as error:
+        log_warning("创建宋体样式失败: %s" % error)
+    try:
+        doc.styles.add(CJK_FONT_NAME, font=CJK_FONT_FILE)
+        return CJK_FONT_NAME
+    except Exception as error:
+        log_warning("创建宋体样式失败(2): %s" % error)
+    return None
+
+
+def _mtext_height_scale(raw):
+    """Return the effective height of an MTEXT before inline formatting is lost.
+
+    MTEXT often carries inline height overrides such as ``\\H2.5x;`` or
+    ``\\H150;``; replacing the content drops them and the Chinese text then
+    renders at the small default height.
+    """
+    if not isinstance(raw, str) or "\\H" not in raw:
+        return None
+    factors = []
+    absolutes = []
+    for value, marker in re.findall(r"\\H([0-9.]+)([xX]?);", raw):
+        try:
+            number = float(value)
+        except ValueError:
+            continue
+        if marker:
+            factors.append(number)
+        else:
+            absolutes.append(number)
+    scale = max(factors) if factors else 1.0
+    absolute = max(absolutes) if absolutes else 0.0
+    return scale, absolute
+
+
+TEXT_HEIGHT_FACTOR = 1.2
+
+
+def set_entity_text(entity, text, style_name=None):
     kind = entity.dxftype()
-    if kind == "MTEXT":
-        entity.text = text
+    raw = ""
+    try:
+        if kind == "MTEXT":
+            raw = entity.text
+        elif kind in ("TEXT", "ATTRIB", "ATTDEF"):
+            raw = entity.dxf.get("text", "") or ""
+    except Exception:
+        raw = ""
+    try:
+        if kind == "MTEXT":
+            entity.text = text
+        elif kind in ("TEXT", "ATTRIB", "ATTDEF"):
+            entity.dxf.text = text
+        elif kind == "TOLERANCE":
+            entity.dxf.text = text
+        elif kind == "DIMENSION":
+            entity.dxf.text = text
+        elif kind == "MULTILEADER":
+            try:
+                entity.set_mtext_content(text)
+            except Exception:
+                return False
+        else:
+            return False
+    except Exception as error:
+        log_warning("写入 %s 文本失败: %s" % (kind, error))
+        return False
+    if style_name:
+        try:
+            entity.dxf.style = style_name
+        except Exception:
+            pass
+    # Chinese glyphs look smaller than Latin capitals at the same nominal height
+    # and squeeze into a narrow width factor; enlarge slightly and reset width.
+    try:
+        if kind in ("TEXT", "ATTRIB", "ATTDEF"):
+            height = float(entity.dxf.get("height", 0) or 0)
+            if height > 0:
+                entity.dxf.height = round(height * TEXT_HEIGHT_FACTOR, 3)
+            entity.dxf.width = 1.0
+        elif kind == "MTEXT":
+            char_height = float(entity.dxf.get("char_height", 0) or 0)
+            info = _mtext_height_scale(raw)
+            scale, absolute = (1.0, 0.0) if info is None else info
+            effective = char_height * scale if char_height > 0 else 0.0
+            if absolute > effective:
+                effective = absolute
+            if effective > 0:
+                entity.dxf.char_height = round(effective * TEXT_HEIGHT_FACTOR, 3)
+    except Exception:
+        pass
+    return True
+
+
+def repair_materials(doc):
+    """Rebuild the standard materials that ezdxf expects when saving a DXF.
+
+    DXF files written by LibreDWG often carry an ACAD_MATERIAL dictionary whose
+    entries point at MATERIAL objects that do not exist in the file. ezdxf then
+    resolves those entries to handle strings and its save path crashes with
+    "'str' object has no attribute 'dxf'".
+    """
+    try:
+        table = doc.materials
+    except Exception as error:
+        log_warning("材质表不可用: %s" % error)
+        return False
+    fixed = False
+    for name in ("ByBlock", "ByLayer", "Global"):
+        entry = None
+        try:
+            entry = table.get(name)
+        except Exception:
+            entry = None
+        if entry is None or isinstance(entry, str) or not hasattr(entry, "dxf"):
+            try:
+                table.object_dict.discard(name)
+            except Exception:
+                pass
+            try:
+                table.new(name)
+                fixed = True
+            except Exception as error:
+                log_warning("重建材质 %s 失败: %s" % (name, error))
+    return fixed
+
+
+def save_dxf(doc, path):
+    try:
+        doc.saveas(path)
         return True
-    if kind in ("TEXT", "ATTRIB", "ATTDEF"):
-        entity.dxf.text = text
+    except Exception as error:
+        log_warning("直接保存 DXF 失败（%s），修复材质表后重试" % error)
+    repair_materials(doc)
+    try:
+        doc.saveas(path)
         return True
+    except Exception as error:
+        log_warning("修复后仍无法保存 DXF: %s" % error)
+    return False
+
+
+def save_dxf(doc, path):
+    try:
+        doc.saveas(path)
+        return True
+    except Exception as error:
+        log_warning("直接保存 DXF 失败（%s），修复材质表后重试" % error)
+    repair_materials(doc)
+    try:
+        doc.saveas(path)
+        return True
+    except Exception as error:
+        log_warning("修复后仍无法保存 DXF: %s" % error)
     return False
 
 
 def render_pdf(doc, out_pdf):
     from ezdxf.addons.drawing import Frontend, RenderContext
     from ezdxf.addons.drawing.pymupdf import PyMuPDFBackend
-    try:
-        backend = PyMuPDFBackend(doc)
-    except TypeError:
-        backend = PyMuPDFBackend()
+    backend = PyMuPDFBackend()
     frontend = Frontend(RenderContext(doc), backend)
     frontend.draw_layout(doc.modelspace())
+    try:
+        backend.finalize()
+    except Exception:
+        pass
     data = backend.get_pdf_bytes()
     with open(out_pdf, "wb") as handle:
         handle.write(data)
@@ -154,44 +394,61 @@ def read_dwg_json(dwg_path, work_dir):
                        (proc.returncode, (proc.stderr or b"").decode("utf-8", "replace")[-400:]))
 
 
+JSON_KINDS = ("TEXT", "MTEXT", "ATTRIB", "ATTDEF", "MULTILEADER", "DIMENSION", "TOLERANCE")
+JSON_TEXT_KEYS = ("text_value", "text", "textValue", "content", "value", "default_content")
+
+
+def _kind_of(obj):
+    for key in ("entity", "object", "type", "name", "class"):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            return value.upper()
+    return ""
+
+
+def _text_of(obj):
+    for key in JSON_TEXT_KEYS:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def json_to_segments(raw):
-    """Best-effort text extraction from LibreDWG's JSON dump."""
+    """Extract text entities from LibreDWG's JSON dump (recursive, best effort)."""
     try:
         data = json.loads(raw)
     except Exception:
         return []
-    objects = None
-    if isinstance(data, dict):
-        for key in ("objects", "OBJECTS", "entities", "ENTITIES"):
-            if isinstance(data.get(key), list):
-                objects = data[key]
-                break
-    elif isinstance(data, list):
-        objects = data
-    if not objects:
-        return []
+    found = []
+
+    def walk(node, depth=0):
+        if depth > 12 or len(found) > 20000:
+            return
+        if isinstance(node, dict):
+            kind = _kind_of(node)
+            base_kind = kind.split(".")[-1]
+            if base_kind in JSON_KINDS:
+                text = _text_of(node)
+                if text:
+                    found.append((node, base_kind, text))
+            for value in node.values():
+                walk(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(data)
     segments = []
-    for index, obj in enumerate(objects):
-        if not isinstance(obj, dict):
-            continue
-        kind = str(obj.get("entity") or obj.get("type") or obj.get("object") or obj.get("name") or "").upper()
-        if kind not in TEXT_TYPES and "MTEXT" not in kind:
-            continue
-        text = ""
-        for key in ("text_value", "text", "value", "textValue", "content"):
-            value = obj.get(key)
-            if isinstance(value, str) and value.strip():
-                text = value
-                break
-        if not text:
-            continue
-        text = clean_mtext(text)
-        if not text:
-            continue
+    for index, (obj, kind, text) in enumerate(found):
         handle = obj.get("handle") or obj.get("handle_ref") or obj.get("ownerhandle") or index
-        segments.append({"id": "e%s" % str(handle).upper(), "handle": str(handle).upper(),
-                         "type": "MTEXT" if "MTEXT" in kind else ("TEXT" if "TEXT" in kind else "ATTRIB"),
-                         "text": text.strip(), "layer": str(obj.get("layer") or "")})
+        segments.append({
+            "id": "j%s" % str(handle).upper(),
+            "handle": str(handle).upper(),
+            "type": "MTEXT" if kind == "MTEXT" else ("TEXT" if kind == "TEXT" else kind),
+            "text": clean_mtext(text) or text.strip(),
+            "layer": str(obj.get("layer") or ""),
+        })
     return segments
 
 
@@ -199,25 +456,34 @@ def cmd_extract(input_path, out_path):
     work_dir = tempfile.mkdtemp(prefix="dwg-extract-")
     try:
         try:
-            dxf_path = convert_to_dxf(input_path, work_dir)
-            doc = ezdxf.readfile(dxf_path)
+            dxf_path, doc, variant = convert_to_dxf(input_path, work_dir)
             segments = collect_segments(doc)
-            payload = {"ok": True, "file": input_path, "converter": "libredwg", "segments": segments,
-                       "counts": {"text": sum(1 for s in segments if s["type"] == "TEXT"),
-                                  "mtext": sum(1 for s in segments if s["type"] == "MTEXT"),
-                                  "attrib": sum(1 for s in segments if s["type"] in ("ATTRIB", "ATTDEF"))}}
+            payload = {
+                "ok": True,
+                "file": input_path,
+                "converter": "libredwg",
+                "dxf_variant": variant,
+                "segments": segments,
+                "counts": {kind: sum(1 for s in segments if s["type"] == kind) for kind in sorted({s["type"] for s in segments})},
+            }
             with open(out_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False)
-            print(json.dumps({"ok": True, "converter": "libredwg", "segments": len(segments)}, ensure_ascii=False))
+            print(json.dumps({"ok": True, "converter": "libredwg", "dxf_variant": variant,
+                              "segments": len(segments), "counts": payload["counts"]}, ensure_ascii=False))
             return
         except Exception as error:
             log_warning("DXF 转换失败，尝试 JSON 兜底: %s" % error)
             dxf_error = error
         raw = read_dwg_json(input_path, work_dir)
         segments = json_to_segments(raw)
-        payload = {"ok": True, "file": input_path, "converter": "libredwg-json", "segments": segments,
-                   "warnings": [] if segments else ["DXF 转换失败: %s" % dxf_error,
-                                                    "JSON 长度 %d，前 1200 字: %s" % (len(raw), raw[:1200])]}
+        payload = {
+            "ok": True,
+            "file": input_path,
+            "converter": "libredwg-json",
+            "segments": segments,
+            "warnings": [] if segments else ["DXF 转换失败: %s" % dxf_error,
+                                             "JSON 长度 %d，前 1200 字: %s" % (len(raw), raw[:1200])],
+        }
         with open(out_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False)
         print(json.dumps({"ok": True, "converter": "libredwg-json", "segments": len(segments)}, ensure_ascii=False))
@@ -250,7 +516,7 @@ def cmd_apply(input_path, map_path, out_dxf, out_pdf=None):
     warnings = []
     try:
         try:
-            dxf_path = convert_to_dxf(input_path, work_dir)
+            dxf_path, doc, variant = convert_to_dxf(input_path, work_dir)
         except Exception as error:
             csv_path = os.path.splitext(out_dxf)[0] + ".csv"
             raw = read_dwg_json(input_path, work_dir)
@@ -259,9 +525,10 @@ def cmd_apply(input_path, map_path, out_dxf, out_pdf=None):
             print(json.dumps({"ok": True, "applied": applied, "skipped": 0, "output": csv_path, "pdf": None,
                               "warnings": ["DXF 写入失败（%s），已输出双语对照表 CSV" % error]}, ensure_ascii=False))
             return
-        doc = ezdxf.readfile(dxf_path)
+        style_name = ensure_cjk_style(doc)
         applied = 0
         skipped = 0
+        style_missing = 0
         for key, value in mapping.items():
             if not isinstance(key, str) or not key.startswith("e"):
                 skipped += 1
@@ -274,15 +541,23 @@ def cmd_apply(input_path, map_path, out_dxf, out_pdf=None):
             if not text:
                 skipped += 1
                 continue
-            try:
-                if set_entity_text(entity, text):
-                    applied += 1
-                else:
-                    skipped += 1
-            except Exception as error:
+            if set_entity_text(entity, text, style_name):
+                applied += 1
+            else:
                 skipped += 1
-                log_warning("替换 %s 失败: %s" % (key, error))
-        doc.saveas(out_dxf)
+                style_missing += 1
+        saved = save_dxf(doc, out_dxf)
+        if not saved:
+            csv_path = os.path.splitext(out_dxf)[0] + ".csv"
+            try:
+                csv_applied = write_translation_table(csv_path, collect_segments(doc), mapping)
+            except Exception as error:
+                csv_applied = 0
+                log_warning("输出 CSV 失败: %s" % error)
+            print(json.dumps({"ok": True, "applied": csv_applied, "skipped": skipped, "output": csv_path,
+                              "pdf": None, "style": style_name, "dxf_variant": variant,
+                              "warnings": warnings + ["DXF 保存失败，已输出双语对照表 CSV"]}, ensure_ascii=False))
+            return
         pdf_written = None
         if out_pdf:
             try:
@@ -291,8 +566,11 @@ def cmd_apply(input_path, map_path, out_dxf, out_pdf=None):
             except Exception as error:
                 warnings.append("PDF 预览渲染失败: %s" % error)
                 log_warning(warnings[-1])
+        if style_missing > 0:
+            warnings.append("%d 个实体类型不支持直接改文字（已跳过）" % style_missing)
         print(json.dumps({"ok": True, "applied": applied, "skipped": skipped, "output": out_dxf,
-                          "pdf": pdf_written, "warnings": warnings[:20]}, ensure_ascii=False))
+                          "pdf": pdf_written, "style": style_name, "dxf_variant": variant,
+                          "warnings": warnings[:20]}, ensure_ascii=False))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -320,6 +598,8 @@ def main(argv):
     except SystemExit:
         raise
     except Exception as error:
+        import traceback
+        traceback.print_exc()
         fail(error)
 
 
