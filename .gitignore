@@ -1,0 +1,10 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# User chat data / privacy: never publish
+data/cache.json
+
+# Logs / temp
+*.log
+!data/.gitkeep
