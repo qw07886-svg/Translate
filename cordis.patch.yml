@@ -1,3 +1,0 @@
-- insert:
-    - id: drawing-translator
-      name: '@local/dsh-drawing-translator'
