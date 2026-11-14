@@ -36,7 +36,8 @@ plugin_manager set_plugin      target: "include:drawing-translator"  enabled: tr
 1. 左侧栏点「图纸翻译」。
 2. 输入或「选择文件夹」确定要扫描的目录；只想翻某个文件时点「选择文件」直接勾选。
 3. 「扫描目录」预览会处理哪些文件；「开始翻译」执行。
-4. 进度、每个文件的状态与日志都在面板里；完成后「打开所在文件夹」直接定位译文。
+4. 「当前任务」卡片实时显示阶段、文件数、段落数、已用时、预计剩余与进度条；任务可随时取消，最近几次任务可从下拉框切回查看。
+5. 「翻译结果」卡片按完成顺序列出译文，**点文件名**即用默认程序打开该文件；每行的三个按钮分别是打开译文、在资源管理器中选中该文件、打开所在文件夹。失败与跳过的文件连同原因列在下方，日志可展开。
 
 Agent 也可以直接调用工具：
 
@@ -77,7 +78,7 @@ Agent 也可以直接调用工具：
 ```
 index.js               Host 入口：HTTP 路由 + agent 工具
 client.js              左侧栏入口 + 主面板（React.createElement，无 JSX）
-lib/api.js             HTTP 接口
+lib/api.js             HTTP 接口（含 /scan 异步进度、/scan/cancel、/open 打开或定位文件）
 lib/engine.js          扫描 / 提取 / 翻译 / 写回 与 LLM 调用
 lib/jobs.js            任务管理（批处理、缓存、补译、命名）
 lib/python.js          Python 桥

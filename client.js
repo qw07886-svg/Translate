@@ -81,6 +81,21 @@ window.__ModuleLoader__.load({
         'job.files': '文件',
         'job.segments': '段落',
         'job.translated': '已翻译',
+        'run.phase.finished': '已结束',
+        'task.title': '当前任务',
+        'task.idle': '当前没有正在运行的任务',
+        'task.status.running': '运行中',
+        'task.status.done': '已完成',
+        'task.status.failed': '失败',
+        'task.status.cancelled': '已取消',
+        'task.phase': '阶段：{phase}',
+        'task.files': '文件 {done}/{total}',
+        'task.segments': '段落 {translated}/{segments}',
+        'task.elapsed': '已用时 {time}',
+        'task.eta': '预计还需 {time}',
+        'task.percent': '完成 {pct}%',
+        'task.cancel': '取消任务',
+        'task.openFolder': '打开输出文件夹',
         'file.queued': '排队',
         'file.running': '处理中',
         'file.done': '完成',
@@ -88,6 +103,15 @@ window.__ModuleLoader__.load({
         'file.skipped': '跳过',
         'result.summary': '成功 {done}，失败 {failed}，跳过 {skipped}',
         'result.savedNext': '译文已保存在原文件所在文件夹。',
+        'result.title': '翻译结果',
+        'result.doneTitle': '已翻译完成的文件（{n}）',
+        'result.openFile': '打开译文',
+        'result.showInFolder': '在文件夹中显示',
+        'result.outputFile': '译文',
+        'result.sourceFile': '原文',
+        'result.pending': '任务运行中，每完成一个文件就会出现在这里，点击文件名即可打开。',
+        'result.empty': '还没有完成的文件。',
+        'result.openFailed': '无法打开 {path}：{error}',
         'error.prefix': '出错了',
         'loading': '加载中…',
       },
@@ -152,6 +176,21 @@ window.__ModuleLoader__.load({
         'job.files': 'Files',
         'job.segments': 'Segments',
         'job.translated': 'Translated',
+        'run.phase.finished': 'finished',
+        'task.title': 'Current task',
+        'task.idle': 'No task is running',
+        'task.status.running': 'running',
+        'task.status.done': 'done',
+        'task.status.failed': 'failed',
+        'task.status.cancelled': 'cancelled',
+        'task.phase': 'Phase: {phase}',
+        'task.files': 'files {done}/{total}',
+        'task.segments': 'segments {translated}/{segments}',
+        'task.elapsed': '{time} elapsed',
+        'task.eta': 'about {time} left',
+        'task.percent': '{pct}% done',
+        'task.cancel': 'Cancel task',
+        'task.openFolder': 'Open output folder',
         'file.queued': 'queued',
         'file.running': 'running',
         'file.done': 'done',
@@ -159,6 +198,15 @@ window.__ModuleLoader__.load({
         'file.skipped': 'skipped',
         'result.summary': '{done} done, {failed} failed, {skipped} skipped',
         'result.savedNext': 'Translations are saved in each source file folder.',
+        'result.title': 'Results',
+        'result.doneTitle': 'Translated files ({n})',
+        'result.openFile': 'Open translation',
+        'result.showInFolder': 'Show in folder',
+        'result.outputFile': 'translation',
+        'result.sourceFile': 'source',
+        'result.pending': 'Files appear here as they finish; click a file name to open it.',
+        'result.empty': 'No translated file yet.',
+        'result.openFailed': 'Cannot open {path}: {error}',
         'error.prefix': 'Error',
         'loading': 'Loading…',
       },
@@ -210,6 +258,11 @@ window.__ModuleLoader__.load({
       bar: { height: 6, borderRadius: 999, background: COLORS.surfaceAlt, overflow: 'hidden' },
       barFill: { height: '100%', background: COLORS.accent, transition: 'width .3s ease' },
       mono: { fontFamily: 'Consolas, Menlo, monospace', fontSize: 11, color: COLORS.textDim, wordBreak: 'break-all' },
+      col: { display: 'flex', flexDirection: 'column', gap: 8 },
+      link: { color: COLORS.accent, cursor: 'pointer', wordBreak: 'break-all', textDecoration: 'underline', textUnderlineOffset: 2 },
+      buttonSmall: { height: 26, padding: '0 8px', borderRadius: 6, border: '1px solid ' + COLORS.border, background: COLORS.surface, color: COLORS.text, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' },
+      resultRow: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '6px 0', borderBottom: '1px solid ' + COLORS.border },
+      resultMain: { flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }
     }
 
     function makeT(active) {
@@ -231,6 +284,23 @@ window.__ModuleLoader__.load({
       if (bytes < 1024) return bytes + ' B'
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB'
       return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+    }
+
+    /** Compact duration for the task card: "12 秒" / "3 分 20 秒" / "1 小时 5 分". */
+    function formatDuration(ms, lang) {
+      var total = Math.max(0, Math.round((ms || 0) / 1000))
+      var english = lang === 'en'
+      if (total < 60) return english ? total + 's' : total + ' 秒'
+      var minutes = Math.floor(total / 60)
+      var seconds = total % 60
+      if (minutes < 60) {
+        if (english) return minutes + 'm' + (seconds ? ' ' + seconds + 's' : '')
+        return minutes + ' 分' + (seconds ? ' ' + seconds + ' 秒' : '')
+      }
+      var hours = Math.floor(minutes / 60)
+      var rest = minutes % 60
+      if (english) return hours + 'h' + (rest ? ' ' + rest + 'm' : '')
+      return hours + ' 小时' + (rest ? ' ' + rest + ' 分' : '')
     }
 
     async function request(path, options) {
@@ -263,6 +333,7 @@ window.__ModuleLoader__.load({
       if (kind === 'ok') color = COLORS.success
       if (kind === 'warn') color = COLORS.warning
       if (kind === 'bad') color = COLORS.danger
+      if (kind === 'accent') color = COLORS.accent
       return Object.assign({}, STYLES.badge, { color: color })
     }
 
@@ -373,6 +444,9 @@ window.__ModuleLoader__.load({
       var browserState = useState({ open: false, mode: 'files', dir: '', parent: null, home: '', entries: [], loading: false, selected: {} })
       var browser = browserState[0]
       var setBrowser = browserState[1]
+      var jobsState = useState([])
+      var jobs = jobsState[0]
+      var setJobs = jobsState[1]
       var pollRef = useRef(null)
       var scanPollRef = useRef(null)
       var scanIdRef = useRef(null)
@@ -399,26 +473,39 @@ window.__ModuleLoader__.load({
         return function () { cancelled = true }
       }, [])
 
+      // One poller drives both the current-task card and the results list, and it
+      // follows a running job even when the agent tool started it, so the panel
+      // always shows the task the machine is actually doing.
       useEffect(function () {
-        if (!jobId) return undefined
         var stop = false
+        function apply(payload) {
+          var list = (payload && payload.jobs) || []
+          var runningJob = null
+          for (var i = 0; i < list.length; i += 1) {
+            if (list[i].status === 'running') { runningJob = list[i]; break }
+          }
+          var focus = null
+          if (jobId) focus = list.filter(function (item) { return item.id === jobId })[0] || null
+          if (runningJob && (!focus || focus.status !== 'running')) focus = runningJob
+          if (!focus) focus = list[0] || null
+          setJobs(list)
+          if (!focus) {
+            setJob(null)
+            return
+          }
+          if (focus.id !== jobId) setJobId(focus.id)
+          setJob(focus)
+          if (focus.status !== 'running') setBusy(false)
+        }
         function tick() {
-          request('/job?id=' + encodeURIComponent(jobId)).then(function (data) {
-            if (stop) return
-            setJob(data.job)
-            if (data.job && data.job.status !== 'running') {
-              setBusy(false)
-              if (pollRef.current) {
-                clearInterval(pollRef.current)
-                pollRef.current = null
-              }
-            }
+          request('/jobs').then(function (data) {
+            if (!stop) apply(data)
           }).catch(function (err) {
             if (!stop) setError(err.message)
           })
         }
         tick()
-        pollRef.current = setInterval(tick, 1200)
+        pollRef.current = setInterval(tick, 1500)
         return function () {
           stop = true
           if (pollRef.current) {
@@ -563,9 +650,61 @@ window.__ModuleLoader__.load({
         request('/reveal', { method: 'POST', body: { path: path } }).catch(function (err) { setError(err.message) })
       }
 
+      function dirOf(target) {
+        if (!target) return ''
+        return String(target).replace(/[\\/][^\\/]*$/, '')
+      }
+
+      function fileNameOf(target) {
+        if (!target) return ''
+        var parts = String(target).split(/[\\/]/)
+        return parts[parts.length - 1] || target
+      }
+
+      function openPath(target, select) {
+        if (!target) return
+        request('/open', { method: 'POST', body: { path: target, select: select === true } }).catch(function (err) {
+          setError(t('result.openFailed', { path: target, error: err.message }))
+        })
+      }
+
+      function openFile(target) { openPath(target, false) }
+
+      function showInFolder(target) { openPath(target, true) }
+
+      function jobOptionText(item) {
+        var stamp = ''
+        try { stamp = new Date(item.createdAt).toLocaleTimeString() } catch (error) { stamp = '' }
+        var done = item.totals && item.totals.done ? item.totals.done : 0
+        var total = item.totals && item.totals.files ? item.totals.files : 0
+        return stamp + ' · ' + t('task.status.' + item.status) + ' · ' + done + '/' + total
+      }
+
       var running = Boolean(job && job.status === 'running')
       var translation = status && status.translation ? status.translation : null
       var engineReady = Boolean(status && status.python && status.python.ok)
+      var lang = /^en/i.test(String(activeLocale || '')) ? 'en' : 'zh'
+      var jobFiles = job && job.files ? job.files : []
+      var doneFiles = jobFiles.filter(function (file) { return file.status === 'done' && file.output })
+      var otherFiles = jobFiles.filter(function (file) { return !(file.status === 'done' && file.output) })
+      var totals = (job && job.totals) || {}
+      var filesTotal = totals.files || 0
+      var filesDone = (totals.done || 0) + (totals.failed || 0) + (totals.skipped || 0)
+      var segmentsTotal = totals.segments || 0
+      var translatedTotal = totals.translated || 0
+      var elapsedMs = job ? Math.max(0, (job.finishedAt || Date.now()) - (job.createdAt || Date.now())) : 0
+      var pct = 0
+      if (job) {
+        if ((job.phase === 'translate' || job.phase === 'apply') && segmentsTotal > 0) pct = Math.round((translatedTotal / segmentsTotal) * 100)
+        else if (filesTotal > 0) pct = Math.round((filesDone / filesTotal) * 100)
+      }
+      if (pct > 100) pct = 100
+      var etaMs = 0
+      if (running && pct > 4 && pct < 100) etaMs = Math.round((elapsedMs * (100 - pct)) / pct)
+      var outputDir = job ? (job.outputDir || job.sourceDir || '') : ''
+      var jobStatusKind = !job ? 'warn' : (job.status === 'done' ? 'ok' : (job.status === 'failed' ? 'bad' : (job.status === 'cancelled' ? 'warn' : 'accent')))
+      var jobStatusText = !job ? t('task.idle') : t('task.status.' + job.status)
+      var phaseText = job && job.phase ? t('run.phase.' + job.phase) : '—'
 
       return h('div', { style: STYLES.root },
         h('div', null,
@@ -675,47 +814,93 @@ window.__ModuleLoader__.load({
               onClick: startJob,
             }, running ? t('run.running') : t('run.translate')),
             running ? h('button', { style: STYLES.buttonDanger, onClick: cancelJob }, t('run.cancel')) : null,
-            job ? h('span', { style: STYLES.subtitle }, t('result.summary', { done: job.totals.done, failed: job.totals.failed, skipped: job.totals.skipped })) : null
+            job ? h('span', { style: STYLES.subtitle }, t('result.summary', { done: totals.done || 0, failed: totals.failed || 0, skipped: totals.skipped || 0 })) : null
           ),
-          error ? h('div', { style: Object.assign({}, STYLES.subtitle, { color: COLORS.danger }) }, t('error.prefix') + '：' + error) : null,
-          job
-            ? h('div', { style: STYLES.card },
-              h('div', { style: STYLES.cardHead },
-                h('div', { style: STYLES.title }, t('job.progress', { done: job.totals.done, total: job.totals.files })),
-                h('div', { style: STYLES.subtitle }, (t('run.phase.' + job.phase) || job.phase || ''))
-              ),
-              h('div', { style: STYLES.bar },
-                h('div', { style: Object.assign({}, STYLES.barFill, { width: (job.totals.files ? Math.round(job.totals.done / job.totals.files * 100) : 0) + '%' }) })),
-              job.current ? h('div', { style: STYLES.subtitle }, t('job.current', { name: job.current })) : null,
-              h('div', { style: STYLES.row },
-                h('span', { style: badgeStyle() }, t('job.files') + ' ' + job.totals.files),
-                h('span', { style: badgeStyle() }, t('job.segments') + ' ' + job.totals.segments),
-                h('span', { style: badgeStyle('ok') }, t('job.translated') + ' ' + job.totals.translated)
-              ),
-              job.sourceDir ? h('div', { style: STYLES.row },
-                h('span', { style: STYLES.subtitle }, t('job.output') + '：' + job.sourceDir),
-                h('button', { style: STYLES.button, onClick: function () { revealFolder(job.sourceDir) } }, t('job.openFolder'))
-              ) : null,
-              h('table', { style: STYLES.table },
-                h('tbody', null, (job.files || []).map(function (file) {
-                  return h('tr', { key: file.path },
-                    h('td', { style: Object.assign({}, STYLES.td, { color: file.status === 'failed' ? COLORS.danger : (file.status === 'done' ? COLORS.success : COLORS.textDim), width: 70 }) }, t('file.' + file.status)),
-                    h('td', { style: STYLES.td },
-                      h('div', null, file.relPath),
-                      file.output ? h('div', { style: STYLES.mono }, file.output) : null,
-                      file.error ? h('div', { style: Object.assign({}, STYLES.mono, { color: COLORS.danger }) }, file.error) : null
-                    ),
-                    h('td', { style: Object.assign({}, STYLES.td, { width: 60, color: COLORS.textDim }) }, file.translated ? file.translated + '' : '')
-                  )
+          error ? h('div', { style: Object.assign({}, STYLES.subtitle, { color: COLORS.danger }) }, t('error.prefix') + '：' + error) : null
+        ),
+
+        h('div', { style: STYLES.card },
+          h('div', { style: STYLES.cardHead },
+            h('div', { style: STYLES.title }, t('task.title')),
+            h('span', { style: badgeStyle(jobStatusKind) }, jobStatusText)
+          ),
+          job ? h('div', { style: STYLES.col },
+            h('div', { style: STYLES.row },
+              h('span', { style: badgeStyle() }, t('task.phase', { phase: phaseText })),
+              h('span', { style: badgeStyle() }, t('task.files', { done: filesDone, total: filesTotal })),
+              h('span', { style: badgeStyle() }, t('task.segments', { translated: translatedTotal, segments: segmentsTotal })),
+              h('span', { style: badgeStyle() }, t('task.elapsed', { time: formatDuration(elapsedMs, lang) })),
+              running && etaMs > 0 ? h('span', { style: badgeStyle() }, t('task.eta', { time: formatDuration(etaMs, lang) })) : null
+            ),
+            h('div', { style: STYLES.bar },
+              h('div', { style: Object.assign({}, STYLES.barFill, { width: pct + '%' }) })),
+            h('div', { style: STYLES.row },
+              h('span', { style: STYLES.subtitle }, t('task.percent', { pct: pct })),
+              job.current ? h('span', { style: Object.assign({}, STYLES.subtitle, { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }) }, t('job.current', { name: job.current })) : null
+            ),
+            job.error ? h('div', { style: Object.assign({}, STYLES.subtitle, { color: COLORS.danger }) }, job.error) : null,
+            h('div', { style: STYLES.row },
+              running ? h('button', { style: STYLES.buttonDanger, onClick: cancelJob }, t('task.cancel')) : null,
+              outputDir ? h('button', { style: STYLES.button, onClick: function () { revealFolder(outputDir) } }, t('task.openFolder')) : null,
+              jobs.length > 1
+                ? h('select', {
+                  style: Object.assign({}, STYLES.button, { paddingLeft: 6, paddingRight: 6 }),
+                  value: job.id,
+                  onChange: function (event) { setJobId(event.target.value) },
+                }, jobs.map(function (item) {
+                  return h('option', { key: item.id, value: item.id }, jobOptionText(item))
                 }))
-              ),
-              job.log && job.log.length > 0
-                ? h('details', null,
-                  h('summary', { style: STYLES.subtitle }, t('job.log')),
-                  h('pre', { style: STYLES.log }, job.log.join('\n')))
                 : null
             )
-            : h('div', { style: STYLES.subtitle }, t('job.none'))
+          ) : h('div', { style: STYLES.subtitle }, t('task.idle'))
+        ),
+
+        h('div', { style: STYLES.card },
+          h('div', { style: STYLES.cardHead },
+            h('div', { style: STYLES.title }, t('result.title')),
+            h('div', { style: STYLES.subtitle }, t('result.doneTitle', { n: doneFiles.length }))
+          ),
+          doneFiles.length > 0
+            ? h('div', null, doneFiles.map(function (file) {
+              return h('div', { key: file.path, style: STYLES.resultRow },
+                h('div', { style: STYLES.resultMain },
+                  h('a', {
+                    style: STYLES.link,
+                    title: file.output,
+                    onClick: function (event) {
+                      event.preventDefault()
+                      openFile(file.output)
+                    },
+                  }, fileNameOf(file.output)),
+                  h('div', { style: STYLES.mono }, t('result.outputFile') + '：' + file.output),
+                  h('div', { style: STYLES.mono }, t('result.sourceFile') + '：' + file.relPath + (file.translated ? '（' + file.translated + ' 段）' : ''))
+                ),
+                h('div', { style: STYLES.row },
+                  h('button', { style: STYLES.buttonSmall, onClick: function () { openFile(file.output) } }, t('result.openFile')),
+                  h('button', { style: STYLES.buttonSmall, onClick: function () { showInFolder(file.output) } }, t('result.showInFolder')),
+                  h('button', { style: STYLES.buttonSmall, onClick: function () { revealFolder(dirOf(file.output)) } }, t('job.openFolder'))
+                )
+              )
+            }))
+            : h('div', { style: STYLES.subtitle }, job ? t('result.pending') : t('job.none')),
+          otherFiles.length > 0
+            ? h('table', { style: STYLES.table },
+              h('tbody', null, otherFiles.map(function (file) {
+                return h('tr', { key: file.path },
+                  h('td', { style: Object.assign({}, STYLES.td, { color: file.status === 'failed' ? COLORS.danger : (file.status === 'skipped' ? COLORS.warning : COLORS.textDim), width: 70 }) }, t('file.' + file.status)),
+                  h('td', { style: STYLES.td },
+                    h('div', null, file.relPath),
+                    file.error ? h('div', { style: Object.assign({}, STYLES.mono, { color: COLORS.danger }) }, file.error) : null
+                  ),
+                  h('td', { style: Object.assign({}, STYLES.td, { width: 60, color: COLORS.textDim }) }, file.translated ? String(file.translated) : '')
+                )
+              })))
+            : null,
+          job && job.log && job.log.length > 0
+            ? h('details', null,
+              h('summary', { style: STYLES.subtitle }, t('job.log')),
+              h('pre', { style: STYLES.log }, job.log.join('\n')))
+            : null
         ),
 
         browser.open
