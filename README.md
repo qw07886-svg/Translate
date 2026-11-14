@@ -15,6 +15,8 @@
 | DWG | LibreDWG `dwg2dxf` 转 DXF → ezdxf 遍历全实体库提取 TEXT/MTEXT/ATTRIB/ATTDEF/MULTILEADER/DIMENSION/TOLERANCE/表格 → 写回并统一宋体，字高 ×1.2；可同时输出 PDF 预览；DXF 写回失败时降级为双语 CSV |
 | Word (.docx) | python-docx 遍历正文/表格/页眉页脚段落 → 写回中文（宋体），保留段落样式 |
 | 翻译 | 使用当前默认模型（`agentDefaultModel.currentSelection()` + `ctx.llm.stream`），按条输出严格 JSON；批量过大自动二分，截断 JSON 自动修复，缺口自动补译 |
+| Token 统计 | 读取模型流里的 `usage` 事件（`inputTokens`/`outputTokens`/`cacheReadTokens`），按任务、按文件累加；重试与二分产生的多次调用一并计入 |
+| Token 监控 | 每次任务累计模型返回的输入 / 输出 / 缓存命中 / 合计 token 与请求次数，面板每 1.5 秒刷新，并按文件分解；任务结束后数字随任务保留，可在「最近任务」下拉框里逐次对比 |
 | 文件选择 | 面板内文件浏览器（可跨盘、点目录进入、勾选文件），也支持直接输入目录；扫描结果可预览 |
 | 扫描 | 逐层并行遍历（24 路并发 `readdir`，64 路并发 `stat`），跳过系统目录；面板实时显示已扫文件夹数 / 文件数与耗时，可随时「停止扫描」 |
 | 命名 | 原名含中文 → `翻译<原名>`；纯外文原名 → `翻译<中文名>_<原名>`；译文与原件同目录 |
@@ -38,6 +40,7 @@ plugin_manager set_plugin      target: "include:drawing-translator"  enabled: tr
 3. 「扫描目录」预览会处理哪些文件；「开始翻译」执行。
 4. 「当前任务」卡片实时显示阶段、文件数、段落数、已用时、预计剩余与进度条；任务可随时取消，最近几次任务可从下拉框切回查看。
 5. 「翻译结果」卡片按完成顺序列出译文，**点文件名**即用默认程序打开该文件；每行的三个按钮分别是打开译文、在资源管理器中选中该文件、打开所在文件夹。失败与跳过的文件连同原因列在下方，日志可展开。
+6. 「Token 消耗」卡片显示本次任务的合计 / 输入 / 输出 / 缓存命中 token、请求次数、平均每次请求的 token 数，以及每个文件各消耗多少；任务运行时数字实时增长。总 token 不够用时，可据此调小「本次最多处理」或分批扫描。
 
 Agent 也可以直接调用工具：
 
@@ -79,8 +82,8 @@ Agent 也可以直接调用工具：
 index.js               Host 入口：HTTP 路由 + agent 工具
 client.js              左侧栏入口 + 主面板（React.createElement，无 JSX）
 lib/api.js             HTTP 接口（含 /scan 异步进度、/scan/cancel、/open 打开或定位文件）
-lib/engine.js          扫描 / 提取 / 翻译 / 写回 与 LLM 调用
-lib/jobs.js            任务管理（批处理、缓存、补译、命名）
+lib/engine.js          扫描 / 提取 / 翻译 / 写回 与 LLM 调用（回报模型 usage）
+lib/jobs.js            任务管理（批处理、缓存、补译、命名、token 累计）
 lib/python.js          Python 桥
 lib/util.js            工具函数
 python/pdf_engine.py   PDF 引擎

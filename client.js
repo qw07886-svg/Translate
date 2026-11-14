@@ -112,6 +112,18 @@ window.__ModuleLoader__.load({
         'result.pending': '任务运行中，每完成一个文件就会出现在这里，点击文件名即可打开。',
         'result.empty': '还没有完成的文件。',
         'result.openFailed': '无法打开 {path}：{error}',
+        'token.title': 'Token 消耗',
+        'token.subtitle': '本次任务共消耗 {n} tokens，每 1.5 秒刷新一次。',
+        'token.empty': '本次任务还没有调用模型，暂时没有 token 消耗。',
+        'token.total': '合计',
+        'token.input': '输入',
+        'token.output': '输出',
+        'token.cacheRead': '缓存命中',
+        'token.requests': '请求',
+        'token.note': '数字来自模型返回的用量（模型 {model}，平均每次请求 {avg} tokens）；缓存命中的输入按更便宜的价格计费。',
+        'token.files': '各文件消耗',
+        'token.fileRequests': '{n} 次请求',
+        'task.tokens': 'Token {n}',
         'error.prefix': '出错了',
         'loading': '加载中…',
       },
@@ -207,6 +219,18 @@ window.__ModuleLoader__.load({
         'result.pending': 'Files appear here as they finish; click a file name to open it.',
         'result.empty': 'No translated file yet.',
         'result.openFailed': 'Cannot open {path}: {error}',
+        'token.title': 'Token usage',
+        'token.subtitle': 'This task used {n} tokens; refreshed every 1.5 seconds.',
+        'token.empty': 'This task has not called the model yet, so there is no token usage.',
+        'token.total': 'total',
+        'token.input': 'input',
+        'token.output': 'output',
+        'token.cacheRead': 'cached',
+        'token.requests': 'requests',
+        'token.note': 'Counts come from the model usage reports (model {model}, about {avg} tokens per request); cached input is billed at a lower price.',
+        'token.files': 'By file',
+        'token.fileRequests': '{n} requests',
+        'task.tokens': 'tokens {n}',
         'error.prefix': 'Error',
         'loading': 'Loading…',
       },
@@ -301,6 +325,14 @@ window.__ModuleLoader__.load({
       var rest = minutes % 60
       if (english) return hours + 'h' + (rest ? ' ' + rest + 'm' : '')
       return hours + ' 小时' + (rest ? ' ' + rest + ' 分' : '')
+    }
+
+    /** Compact token count: 940 / 12,345 / 1.23M. */
+    function formatTokens(value) {
+      var number = Math.max(0, Math.round(Number(value) || 0))
+      if (number < 10000) return number.toLocaleString()
+      if (number < 1000000) return (number / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+      return (number / 1000000).toFixed(2) + 'M'
     }
 
     async function request(path, options) {
@@ -677,7 +709,8 @@ window.__ModuleLoader__.load({
         try { stamp = new Date(item.createdAt).toLocaleTimeString() } catch (error) { stamp = '' }
         var done = item.totals && item.totals.done ? item.totals.done : 0
         var total = item.totals && item.totals.files ? item.totals.files : 0
-        return stamp + ' · ' + t('task.status.' + item.status) + ' · ' + done + '/' + total
+        var used = (item.tokens && item.tokens.total) || 0
+        return stamp + ' · ' + t('task.status.' + item.status) + ' · ' + done + '/' + total + (used > 0 ? ' · ' + formatTokens(used) + ' tokens' : '')
       }
 
       var running = Boolean(job && job.status === 'running')
@@ -705,6 +738,13 @@ window.__ModuleLoader__.load({
       var jobStatusKind = !job ? 'warn' : (job.status === 'done' ? 'ok' : (job.status === 'failed' ? 'bad' : (job.status === 'cancelled' ? 'warn' : 'accent')))
       var jobStatusText = !job ? t('task.idle') : t('task.status.' + job.status)
       var phaseText = job && job.phase ? t('run.phase.' + job.phase) : '—'
+      var tokens = (job && job.tokens) || {}
+      var tokenInput = tokens.input || 0
+      var tokenOutput = tokens.output || 0
+      var tokenCacheRead = tokens.cacheRead || 0
+      var tokenRequests = tokens.requests || 0
+      var tokenTotal = tokens.total || (tokenInput + tokenOutput)
+      var tokenFiles = jobFiles.filter(function (file) { return file.tokens && (file.tokens.total || 0) > 0 })
 
       return h('div', { style: STYLES.root },
         h('div', null,
@@ -830,7 +870,8 @@ window.__ModuleLoader__.load({
               h('span', { style: badgeStyle() }, t('task.files', { done: filesDone, total: filesTotal })),
               h('span', { style: badgeStyle() }, t('task.segments', { translated: translatedTotal, segments: segmentsTotal })),
               h('span', { style: badgeStyle() }, t('task.elapsed', { time: formatDuration(elapsedMs, lang) })),
-              running && etaMs > 0 ? h('span', { style: badgeStyle() }, t('task.eta', { time: formatDuration(etaMs, lang) })) : null
+              running && etaMs > 0 ? h('span', { style: badgeStyle() }, t('task.eta', { time: formatDuration(etaMs, lang) })) : null,
+              tokenTotal > 0 ? h('span', { style: badgeStyle('accent') }, t('task.tokens', { n: formatTokens(tokenTotal) })) : null
             ),
             h('div', { style: STYLES.bar },
               h('div', { style: Object.assign({}, STYLES.barFill, { width: pct + '%' }) })),
@@ -853,6 +894,41 @@ window.__ModuleLoader__.load({
                 : null
             )
           ) : h('div', { style: STYLES.subtitle }, t('task.idle'))
+        ),
+
+        h('div', { style: STYLES.card },
+          h('div', { style: STYLES.cardHead },
+            h('div', { style: STYLES.title }, t('token.title')),
+            h('div', { style: STYLES.subtitle }, tokenTotal > 0
+              ? t('token.subtitle', { n: formatTokens(tokenTotal) })
+              : t('token.empty'))
+          ),
+          tokenTotal > 0 ? h('div', { style: STYLES.col },
+            h('div', { style: STYLES.row },
+              h('span', { style: badgeStyle('accent') }, t('token.total') + ' ' + formatTokens(tokenTotal)),
+              h('span', { style: badgeStyle() }, t('token.input') + ' ' + formatTokens(tokenInput)),
+              h('span', { style: badgeStyle() }, t('token.output') + ' ' + formatTokens(tokenOutput)),
+              tokenCacheRead > 0 ? h('span', { style: badgeStyle('ok') }, t('token.cacheRead') + ' ' + formatTokens(tokenCacheRead)) : null,
+              h('span', { style: badgeStyle() }, t('token.requests') + ' ' + formatTokens(tokenRequests))
+            ),
+            h('div', { style: STYLES.subtitle }, t('token.note', {
+              model: tokens.model || '—',
+              avg: tokenRequests > 0 ? formatTokens(Math.round(tokenTotal / tokenRequests)) : '0',
+            })),
+            tokenFiles.length > 0
+              ? h('div', null,
+                h('div', { style: STYLES.subtitle }, t('token.files')),
+                h('table', { style: STYLES.table },
+                  h('tbody', null, tokenFiles.map(function (file) {
+                    return h('tr', { key: file.path },
+                      h('td', { style: STYLES.td }, file.relPath || file.name),
+                      h('td', { style: Object.assign({}, STYLES.td, { width: 90 }) }, formatTokens(file.tokens.total || 0)),
+                      h('td', { style: Object.assign({}, STYLES.td, { width: 100, color: COLORS.textDim }) }, t('token.fileRequests', { n: file.tokens.requests || 0 }))
+                    )
+                  })))
+              )
+              : null
+          ) : null
         ),
 
         h('div', { style: STYLES.card },
