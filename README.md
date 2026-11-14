@@ -11,11 +11,12 @@
 
 | 能力 | 实现 |
 | --- | --- |
-| PDF | PyMuPDF 提取逐行文字 → 擦除原文字 → 按原位置回填中文（宋体），字号放不下时自动缩小 |
+| PDF | 有文字层：PyMuPDF 提取逐行文字 → 擦除原文字 → 按原位置回填中文（宋体），字号放不下时自动缩小。扫描件：先用 Tesseract OCR 识别（按页面脚本自动选语言包），把原图文字涂白后再回填中文 |
 | DWG | LibreDWG `dwg2dxf` 转 DXF → ezdxf 遍历全实体库提取 TEXT/MTEXT/ATTRIB/ATTDEF/MULTILEADER/DIMENSION/TOLERANCE/表格 → 写回并统一宋体，字高 ×1.2；可同时输出 PDF 预览；DXF 写回失败时降级为双语 CSV |
 | Word (.docx) | python-docx 遍历正文/表格/页眉页脚段落 → 写回中文（宋体），保留段落样式 |
 | 翻译 | 使用当前默认模型（`agentDefaultModel.currentSelection()` + `ctx.llm.stream`），按条输出严格 JSON；批量过大自动二分，截断 JSON 自动修复，缺口自动补译 |
 | 文件选择 | 面板内文件浏览器（可跨盘、点目录进入、勾选文件），也支持直接输入目录；扫描结果可预览 |
+| 扫描 | 逐层并行遍历（24 路并发 `readdir`，64 路并发 `stat`），跳过系统目录；面板实时显示已扫文件夹数 / 文件数与耗时，可随时「停止扫描」 |
 | 命名 | 原名含中文 → `翻译<原名>`；纯外文原名 → `翻译<中文名>_<原名>`；译文与原件同目录 |
 
 ## 安装
@@ -51,14 +52,25 @@ Agent 也可以直接调用工具：
   - `pymupdf`（PDF）、`ezdxf`（DWG/DXF + PDF 预览）、`python-docx`（Word）
 - LibreDWG 命令行工具（`dwg2dxf.exe`、`dwgread.exe`）：放在 `bin/libredwg/`，未内置时回退到 `C:\Users\Administrator\dsh-dwg-tools\libredwg`
 - 宋体字体 `C:\Windows\Fonts\simsun.ttc`（缺失时依次回退 微软雅黑/黑体）
+- Tesseract OCR（**仅扫描版 PDF 需要**）：默认找 `C:\Program Files\Tesseract-OCR\tesseract.exe`，也可用环境变量 `TESSERACT_PATH` 指定或装进 PATH。至少需要 `chi_sim`、`eng` 两个语言包；装了 `srp`/`rus` 等西里尔语言包时会按页面脚本自动选用，扫描的外文合同才不会读成乱码。未安装时扫描版 PDF 会在日志里明确提示，而不是静默跳过
 
 ## 已知限制
 
-- 扫描版 PDF（图片）没有文字层，无法翻译；旧版 `.doc` 不支持，请先另存为 `.docx`。
+- 扫描版 PDF 依赖 Tesseract OCR：识别 9 页扫描件约 38 秒，页数越多越慢；字迹模糊、手写或倾斜严重的页面识别率会下降。旧版 `.doc` 不支持，请先另存为 `.docx`。
 - Word 文本框内的文字不处理。
 - DWG 中个别实体类型（如 ACAD_TABLE）只能读取不能写回；旋转文字回填后为水平方向。
 - DWG 的 DXF 写回失败时（LibreDWG 对极少数高版本文件）会输出同名双语 CSV 代替。
 - 图纸中的型号、电压、回路号等纯拉丁串会原样保留，不做翻译。
+
+## 扫描上限
+
+扫描是逐层并行的，但为防止整盘扫描把机器拖死，有以下硬上限（触发任一条都会在面板/日志里提示「已达到扫描上限」）：
+
+- 最多 8000 个目标文件、40000 个文件夹
+- 单次扫描最长 30 秒
+- 跳过 `node_modules`、`.git`、`Windows`、`WinSxS`、`AppData`、`$RECYCLE.BIN` 等系统与构建目录
+
+需要更多文件时，请选择子目录分几次扫描。
 
 ## 目录
 

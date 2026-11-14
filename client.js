@@ -62,6 +62,9 @@ window.__ModuleLoader__.load({
         'scan.docx': 'Word',
         'scan.total': '共 {n} 个文件',
         'scan.empty': '还没有扫描结果',
+        'scan.progress': '正在扫描：{dirs} 个文件夹、{files} 个文件，已用 {sec} 秒',
+        'scan.cancel': '停止扫描',
+        'scan.truncated': '已达到扫描上限，下面的列表只包含部分文件。请选择更具体的文件夹后重新扫描。',
         'run.translate': '开始翻译',
         'run.cancel': '取消任务',
         'run.running': '翻译中…',
@@ -130,6 +133,9 @@ window.__ModuleLoader__.load({
         'scan.docx': 'Word',
         'scan.total': '{n} file(s)',
         'scan.empty': 'Nothing scanned yet',
+        'scan.progress': 'Scanning: {dirs} folder(s), {files} file(s), {sec}s elapsed',
+        'scan.cancel': 'Stop scanning',
+        'scan.truncated': 'The scan hit its limit, so this list is only partial. Pick a narrower folder and scan again.',
         'run.translate': 'Start translating',
         'run.cancel': 'Cancel job',
         'run.running': 'Translating…',
@@ -158,16 +164,23 @@ window.__ModuleLoader__.load({
       },
     }
 
+    // Theme tokens. The primary button needs a paired background/foreground:
+    // --dsw-alias-brand-primary is near-black in the light theme and near-white
+    // in the dark one, so white text on it vanished in dark mode. The button
+    // fill and its inverted label come as a matched pair instead.
     var COLORS = {
-      border: 'var(--dsw-alias-border-subtle, rgba(127,127,127,.22))',
-      surface: 'var(--dsw-alias-bg-base, #fff)',
-      surfaceAlt: 'var(--dsw-alias-bg-secondary, rgba(127,127,127,.06))',
+      border: 'var(--dsw-alias-border-l2, rgba(127,127,127,.22))',
+      surface: 'var(--dsw-alias-bg-layer-1, #fff)',
+      surfaceAlt: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,.06))',
       text: 'var(--dsw-alias-label-primary, #1f1f1f)',
       textDim: 'var(--dsw-alias-label-secondary, #666)',
       textTertiary: 'var(--dsw-alias-label-tertiary, #999)',
-      accent: 'var(--dsw-alias-brand-primary, #2b7fd4)',
+      accent: 'var(--dsw-alias-state-business-primary, #4166e6)',
+      primaryFill: 'var(--dsw-alias-button-primary-fill, #1f1f1f)',
+      primaryText: 'var(--dsw-alias-label-primary-inverted, #fff)',
+      primaryDimmed: 'var(--dsw-alias-button-primary-dimmed, rgba(127,127,127,.18))',
       success: 'var(--dsw-alias-state-success-primary, #1a7f37)',
-      warning: 'var(--dsw-alias-state-warning-primary, #b26a00)',
+      warning: 'var(--dsw-alias-state-warn-primary, #b26a00)',
       danger: 'var(--dsw-alias-state-error-primary, #c62828)',
     }
 
@@ -181,7 +194,8 @@ window.__ModuleLoader__.load({
       input: { flex: '1 1 240px', minWidth: 0, height: 32, padding: '0 10px', borderRadius: 8, border: '1px solid ' + COLORS.border, background: COLORS.surface, color: COLORS.text, fontSize: 13, outline: 'none' },
       number: { width: 70, height: 32, padding: '0 8px', borderRadius: 8, border: '1px solid ' + COLORS.border, background: COLORS.surface, color: COLORS.text, fontSize: 13, textAlign: 'center' },
       button: { height: 32, padding: '0 12px', borderRadius: 8, border: '1px solid ' + COLORS.border, background: COLORS.surface, color: COLORS.text, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' },
-      buttonPrimary: { height: 34, padding: '0 16px', borderRadius: 8, border: '1px solid transparent', background: COLORS.accent, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
+      buttonPrimary: { height: 34, padding: '0 16px', borderRadius: 8, border: '1px solid transparent', background: COLORS.primaryFill, color: COLORS.primaryText, fontSize: 13, fontWeight: 600, cursor: 'pointer' },
+      buttonPrimaryDisabled: { height: 34, padding: '0 16px', borderRadius: 8, border: '1px solid ' + COLORS.border, background: COLORS.primaryDimmed, color: COLORS.textTertiary, fontSize: 13, fontWeight: 600, cursor: 'not-allowed' },
       buttonDanger: { height: 32, padding: '0 12px', borderRadius: 8, border: '1px solid ' + COLORS.border, background: COLORS.surface, color: COLORS.danger, fontSize: 13, cursor: 'pointer' },
       badge: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 8px', borderRadius: 999, fontSize: 11, border: '1px solid ' + COLORS.border, background: COLORS.surfaceAlt, color: COLORS.textDim },
       table: { width: '100%', borderCollapse: 'collapse', fontSize: 12 },
@@ -335,6 +349,9 @@ window.__ModuleLoader__.load({
       var scanningState = useState(false)
       var scanning = scanningState[0]
       var setScanning = scanningState[1]
+      var scanProgressState = useState({ dirs: 0, files: 0, elapsedMs: 0 })
+      var scanProgress = scanProgressState[0]
+      var setScanProgress = scanProgressState[1]
       var pickedState = useState([])
       var picked = pickedState[0]
       var setPicked = pickedState[1]
@@ -357,6 +374,17 @@ window.__ModuleLoader__.load({
       var browser = browserState[0]
       var setBrowser = browserState[1]
       var pollRef = useRef(null)
+      var scanPollRef = useRef(null)
+      var scanIdRef = useRef(null)
+
+      useEffect(function () {
+        return function () {
+          if (scanPollRef.current) {
+            clearTimeout(scanPollRef.current)
+            scanPollRef.current = null
+          }
+        }
+      }, [])
 
       useEffect(function () {
         var cancelled = false
@@ -450,23 +478,65 @@ window.__ModuleLoader__.load({
         setBrowser(function (prev) { return Object.assign({}, prev, { open: false }) })
       }
 
+      // Scanning runs in the background on the host so the panel can show live
+      // counters instead of freezing on one long request.
       function runScan() {
         if (!dir.trim()) {
           setError(t('source.dirPlaceholder'))
           return
         }
+        if (scanPollRef.current) {
+          clearTimeout(scanPollRef.current)
+          scanPollRef.current = null
+        }
         setScanning(true)
         setError('')
+        setScan(null)
+        setScanProgress({ dirs: 0, files: 0, elapsedMs: 0 })
         request('/scan', {
           method: 'POST',
           body: { dir: dir.trim(), kinds: ['pdf', 'dwg', 'docx'] },
         }).then(function (data) {
-          setScan(data)
+          var id = data && data.scanId
+          if (!id) {
+            setScan(data && data.result ? data.result : data)
+            setScanning(false)
+            return
+          }
+          scanIdRef.current = id
+          function poll() {
+            request('/scan?id=' + encodeURIComponent(id)).then(function (view) {
+              setScanProgress({ dirs: view.dirs || 0, files: view.files || 0, elapsedMs: view.elapsedMs || 0 })
+              if (view.error) {
+                scanIdRef.current = null
+                setScanning(false)
+                setError(view.error)
+                return
+              }
+              if (view.running) {
+                scanPollRef.current = setTimeout(poll, 400)
+                return
+              }
+              scanIdRef.current = null
+              setScanning(false)
+              setScan(view.result || null)
+            }).catch(function (err) {
+              scanIdRef.current = null
+              setScanning(false)
+              setError(err.message)
+            })
+          }
+          poll()
         }).catch(function (err) {
           setError(err.message)
-        }).finally(function () {
           setScanning(false)
         })
+      }
+
+      function cancelScan() {
+        var id = scanIdRef.current
+        if (!id) return
+        request('/scan/cancel', { method: 'POST', body: { id: id } }).catch(function (err) { setError(err.message) })
       }
 
       function startJob() {
@@ -560,31 +630,47 @@ window.__ModuleLoader__.load({
           h('div', { style: STYLES.subtitle }, t('name.rule'))
         ),
 
-        scan
+        scanning || scan
           ? h('div', { style: STYLES.card },
             h('div', { style: STYLES.cardHead },
               h('div', { style: STYLES.title }, t('scan.title')),
-              h('div', { style: STYLES.subtitle }, t('scan.total', { n: scan.total || 0 }))
+              h('div', { style: STYLES.subtitle }, scanning
+                ? t('scan.progress', { dirs: scanProgress.dirs, files: scanProgress.files, sec: (scanProgress.elapsedMs / 1000).toFixed(1) })
+                : t('scan.total', { n: scan ? (scan.total || 0) : 0 }))
             ),
-            h('div', { style: STYLES.row },
-              h('span', { style: badgeStyle() }, t('scan.pdf') + ' ' + (scan.pdf ? scan.pdf.length : 0)),
-              h('span', { style: badgeStyle() }, t('scan.dwg') + ' ' + (scan.dwg ? scan.dwg.length : 0)),
-              h('span', { style: badgeStyle() }, t('scan.docx') + ' ' + (scan.docx ? scan.docx.length : 0))
-            ),
-            h('table', { style: STYLES.table },
-              h('tbody', null, [].concat(scan.pdf || [], scan.dwg || [], scan.docx || []).slice(0, 40).map(function (file) {
-                return h('tr', { key: file.path },
-                  h('td', { style: STYLES.td }, file.relPath || file.name),
-                  h('td', { style: Object.assign({}, STYLES.td, { width: 60, color: COLORS.textDim }) }, formatSize(file.size)))
-              }))
-            )
+            scanning
+              ? h('div', { style: STYLES.row },
+                h('button', { style: STYLES.button, onClick: cancelScan }, t('scan.cancel')))
+              : null,
+            scan && scan.truncated
+              ? h('div', { style: Object.assign({}, STYLES.subtitle, { color: COLORS.warning }) }, t('scan.truncated'))
+              : null,
+            scan
+              ? h('div', { style: STYLES.row },
+                h('span', { style: badgeStyle() }, t('scan.pdf') + ' ' + (scan.pdf ? scan.pdf.length : 0)),
+                h('span', { style: badgeStyle() }, t('scan.dwg') + ' ' + (scan.dwg ? scan.dwg.length : 0)),
+                h('span', { style: badgeStyle() }, t('scan.docx') + ' ' + (scan.docx ? scan.docx.length : 0))
+              )
+              : null,
+            scan && (scan.total || 0) === 0
+              ? h('div', { style: STYLES.subtitle }, t('scan.empty'))
+              : null,
+            scan && (scan.total || 0) > 0
+              ? h('table', { style: STYLES.table },
+                h('tbody', null, [].concat(scan.pdf || [], scan.dwg || [], scan.docx || []).slice(0, 40).map(function (file) {
+                  return h('tr', { key: file.path },
+                    h('td', { style: STYLES.td }, file.relPath || file.name),
+                    h('td', { style: Object.assign({}, STYLES.td, { width: 60, color: COLORS.textDim }) }, formatSize(file.size)))
+                }))
+              )
+              : null
           )
           : null,
 
         h('div', { style: STYLES.card },
           h('div', { style: STYLES.row },
             h('button', {
-              style: Object.assign({}, STYLES.buttonPrimary, { opacity: busy || running ? 0.6 : 1 }),
+              style: (busy || running || !engineReady) ? STYLES.buttonPrimaryDisabled : STYLES.buttonPrimary,
               disabled: busy || running || !engineReady,
               onClick: startJob,
             }, running ? t('run.running') : t('run.translate')),
