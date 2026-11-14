@@ -1,0 +1,12 @@
+# 忽略整个ProgramData文件夹
+ProgramData/
+
+# 通用Windows缓存、数据库文件
+*.db
+*.log
+*.tmp
+*.cache
+
+# 其他Windows系统相关
+$RECYCLE.BIN/
+Thumbs.db
